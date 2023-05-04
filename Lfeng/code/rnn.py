@@ -24,23 +24,28 @@ class MyRNN(tf.keras.Model):
 
         ## TODO:
         ## - Define an embedding component to embed the word indices into a trainable embedding space.
+        self.embed_matrix = tf.keras.layers.Embedding(self.vocab_size, self.embed_size)
         ## - Define a recurrent component to reason with the sequence of data. 
+        self.lstm = tf.keras.layers.LSTM(self.rnn_size, return_sequences=True, return_state=True)
         ## - You may also want a dense layer near the end...
-        self.embedding = tf.keras.layers.Embedding(self.vocab_size, self.embed_size)
-        self.embed_matrix = None
-        self.lstm = tf.keras.layers.LSTM(self.rnn_size, return_sequences=True)
-        self.dense = tf.keras.layers.Dense(self.vocab_size, activation='softmax')
+        self.dense = tf.keras.layers.Dense(self.vocab_size, activation='softmax')    
 
     def call(self, inputs):
         """
         - You must use an embedding layer as the first layer of your network (i.e. tf.nn.embedding_lookup or tf.keras.layers.Embedding)
         - You must use an LSTM or GRU as the next layer.
         """
-        self.embed_matrix = self.embedding(inputs)
-        print(self.embed_matrix)
-        output = self.lstm(self.embed_matrix)
-        output = self.dense(output)
-        return output
+        x = inputs
+        x = self.embed_matrix(x)
+        x, final_output, final_state = self.lstm(x)
+        #print(x.shape)
+        x = self.dense(x)
+
+
+
+        #print(whole_seq_output.shape, final_output.shape, print(final_output))
+
+        return x
 
     ##########################################################################################
 
@@ -53,33 +58,24 @@ class MyRNN(tf.keras.Model):
 
         first_string = word1
         first_word_index = vocab[word1]
-        next_input = [[first_word_index]]
+        next_input = np.array([[first_word_index]], dtype=np.int32)
         text = [first_string]
 
         for i in range(length):
             logits = self.call(next_input)
+            #print(logits)
             logits = np.array(logits[0,0,:])
             top_n = np.argsort(logits)[-sample_n:]
             n_logits = np.exp(logits[top_n])/np.exp(logits[top_n]).sum()
             out_index = np.random.choice(top_n,p=n_logits)
 
             text.append(reverse_vocab[out_index])
-            next_input = [[out_index]]
+            next_input = np.array([[out_index]], dtype=np.int32)
 
         print(" ".join(text))
 
-    def pt_emb_matrix(self):
-        return self.embedding[0]
-
 
 #########################################################################################
-class MyLoss(tf.keras.losses.SparseCategoricalCrossentropy):
-    def __init__(self, *args, name="perplexity", **kwargs):
-        super().__init__(*args, name=name, **kwargs)
-    def call(self, *args, **kwargs):
-        loss = super().call(*args, **kwargs)
-        loss = tf.reduce_mean(loss)
-        return tf.math.exp(loss)
 
 def get_text_model(vocab):
     '''
@@ -89,23 +85,28 @@ def get_text_model(vocab):
     ## TODO: Set up your implementation of the RNN
 
     ## Optional: Feel free to change or add more arguments!
-    model = MyRNN(len(vocab), rnn_size=150, embed_size=80)
+    model = MyRNN(len(vocab))
 
-    ## TODO: Define your own loss and metric for your optimizer
+    def perplexity(y_true, y_pred):
+        return tf.math.exp(tf.reduce_mean(tf.keras.metrics.sparse_categorical_crossentropy(y_true, y_pred)))
+
+
+    # TODO: Define your own loss and metric for your optimizer
     loss_metric = tf.keras.losses.SparseCategoricalCrossentropy()
-    acc_metric  = MyLoss()
+    acc_metric  = perplexity
+    adam_optimizer = tf.keras.optimizers.Adam(learning_rate=0.005)
 
     ## TODO: Compile your model using your choice of optimizer, loss, and metrics
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.005),
-        loss=loss_metric,
+        optimizer=adam_optimizer, 
+        loss=loss_metric, 
         metrics=[acc_metric],
     )
 
     return SimpleNamespace(
         model = model,
-        epochs = 1,
-        batch_size = 10,
+        epochs = 2,
+        batch_size = 100,
     )
 
 
@@ -119,25 +120,56 @@ def main():
     ##   from train_x and test_x. You also need to drop the first element from train_y and test_y.
     ##   If you don't do this, you will see very, very small perplexities.
     ##   HINT: You might be able to find this somewhere...
-    train_id, test_id, vocab = get_data("../data/train.txt", "../data/test.txt")
+    train_file = '../data/train.txt'
+    test_file = '../data/test.txt'
 
-    window_size = 20
+    train_data, test_data, vocab = get_data(train_file, test_file)
 
-    train_id = np.array(train_id)
-    test_id = np.array(test_id)
+    # offfset words
+    X0, Y0  = train_data[:-1], train_data[1:]
+    X1, Y1  = test_data[:-1], test_data[1:]
 
-    remainder_train = (len(train_id) - 1) % window_size
-    remainder_test = (len(test_id) - 1) % window_size
+    train_len = X0.shape[0] - (X0.shape[0] % 20)
+    test_len = X1.shape[0] - (X1.shape[0] % 20)
 
-    if remainder_train != 0:
-        train_id = train_id[:-remainder_train]
-    if remainder_test != 0:
-        test_id = test_id[:-remainder_test]
 
-    X0, Y0 = train_id[:-1].reshape(-1, window_size), train_id[1:].reshape(-1, window_size)
-    X1, Y1 = test_id[:-1].reshape(-1, window_size), test_id[1:].reshape(-1, window_size)
+    X0 = X0[:train_len]
+    Y0 = Y0[:train_len]
+    X1 = X1[:test_len]
+    Y1 = Y1[:test_len]
 
+    X0 = tf.reshape(X0,[-1,20])
+    Y0 = tf.reshape(Y0,[-1,20])
+    X1 = tf.reshape(X1,[-1,20])
+    Y1 = tf.reshape(Y1,[-1,20])
+
+    #print(Y0.shape)
+
+    print(X0.shape, Y0.shape, X1.shape, Y1.shape)
+
+
+    # window_sz = 20
+    # for i in range(window_sz,X0.shape[0],window_sz):
+    # 	X_train.append(X0[i-window_sz:i])
+    # 	y_train.append(Y0[i-window_sz:i])
+    # for i in range(window_sz, X1.shape[0],window_sz):
+    # 	X_test.append(X1[i-window_sz:i])
+    # 	y_test.append(Y1[i-window_sz:i])
     ## TODO: Get your model that you'd like to use
+    # X_train = np.array(X_train)
+    # X_train = tf.constant(X_train)
+
+    # y_train = np.array(y_train)
+    # y_train = tf.constant(y_train)
+
+    # X_test = np.array(X_test)
+    # X_test = tf.constant(X_test)
+
+    # y_test = np.array(y_test)
+    # y_test = tf.constant(y_test)
+
+
+
     args = get_text_model(vocab)
 
     args.model.fit(
